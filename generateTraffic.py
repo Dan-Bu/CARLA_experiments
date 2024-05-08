@@ -104,7 +104,8 @@ def generate_traffic(client, number_cars, number_pedestrians):
     # some settings
     percentagePedestriansRunning = 0.0      # how many pedestrians will run
     percentagePedestriansCrossing = 0.0     # how many pedestrians will walk through the road
-    if 0:
+    #Option to have seeded pedestrian spawns and paths
+    if False:
         world.set_pedestrians_seed(0)
         random.seed(0)
     # 1. take all the random locations to spawn

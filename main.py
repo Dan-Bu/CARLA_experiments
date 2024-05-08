@@ -170,7 +170,7 @@ if __name__ == '__main__':
             else: 
                 image = data_dict['sem_image']
             #add speed display
-            image = cv2.putText(image, f'Speed: {str(int(speed))} kmh', settings.org, settings.font, settings.font_scale, settings.text_color, settings.thickness, cv2.LINE_AA)
+            image = cv2.putText(image, f'Speed: {str(int(speed))} kmh', settings.text_loc1, settings.font, settings.font_scale, settings.text_color, settings.thickness, cv2.LINE_AA)
             #Render frame
             cv2.imshow('RGB Camera', image)
 

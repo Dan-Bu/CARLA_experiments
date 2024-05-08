@@ -6,7 +6,10 @@
 
 #all imports
 import carla #the sim library itself
+from carla import command
+
 import time # to set a delay after each photo
+import carla.libcarla
 import cv2 #to work with images from cameras
 import numpy as np #in this example to change image representation - re-shaping
 import math
@@ -161,7 +164,9 @@ def generate_training_data():
 
     #time.sleep(5)
     #client.set_timeout(25)
-    client.load_world('Town03', reset_settings=False, map_layers=carla.MapLayer.All)
+    maps =  ["Town01", "Town02", "Town03", "Town04", "Town05", "Town06", "Town07"]
+
+    client.load_world(maps[2], reset_settings=False, map_layers=carla.MapLayer.All)
 
 
     # get world and spawn points
@@ -200,17 +205,71 @@ def generate_training_data():
     
 
 
-    #main loop
+    # main loop
     img_counter = 0
     quit = False
     training_data_dict = [] # Dictionary that holds the metadata used for training.
     while img_counter < settings.amount_training_data_to_generate:
 
+        # Load a random map
+        map_index = random.randint(0,len(maps)-1)
+        success = False
+        while success == False:
+            try:
+                client.load_world(maps[map_index], reset_settings=False, map_layers=carla.MapLayer.All)
+                success = True
+
+            except RuntimeError:
+                print(f"Failed to load world with index {map_index}")
+                success = False
+        
+        weather = world.get_weather()
+        # Set up random weather
+        weather.wind_strength = random.randint(0,100)
+        weather.sun_altitude_angle = random.randint(-90, 90) # Time of day
+        weather.sun_azimuth_angle = random.randint(0, 360)
+        rain = False
+        weather.precipitation = 0
+        weather.precipation_deposits = 0
+        if random.randint(0,2) == 2:    # Check if we have rain
+            weather.precipitation  = random.randint(0,100)
+            weather.precipation_deposits = random.randint(0,100)
+            weather.cloudiness = random.randint(50,100)
+            weather.wetness = weather.precipitation
+            rain = True
+        else:
+            if random.randint(0,1) == 1: # 50% of the time where it doesn't rain, we want puddles
+                precipation_deposits = random.randint(0,20)
+        
+        weather.fog_density = 0
+        weather.fog_distance = 0
+        if rain == False:   # Only generate fog if we have no rain
+            if random.randint(0,2) == 2:
+                weather.fog_density = random.randint(0,100) # Thickness of the fog
+                weather.fog_distance = random.randint(0,200) # View distance in fog
+                weather.fog_falloff = 1/random.randint(0,100) # How heavy (i.e. low to the ground) the fog is
+                weather.wetness = random.randint(0, 10) # Wetness of the scene
+
+        world.set_weather(weather)
         start_point = random.choice(spawn_points)
         start_point = spawn_points[1]
-        ego_vehicle = world.try_spawn_actor(vehicle_bp, start_point)
+        ego_vehicle = None
+        while ego_vehicle == None:
+            ego_vehicle = world.try_spawn_actor(vehicle_bp, start_point)
 
-        time.sleep(2)
+        world.tick()
+        time.sleep(2)        
+        #Set lights to on if it is night, otherwise turn off
+        light_state = ego_vehicle.get_light_state()
+        if weather.sun_altitude_angle < 10:
+            light_state = carla.libcarla.VehicleLightState.LowBeam
+
+        else:
+            light_state = carla.libcarla.VehicleLightState.NONE
+
+        #command.SetVehicleLightState(ego_vehicle, light_state) #This is broken for some reason?
+        ego_vehicle.set_light_state(light_state)
+        
 
         # setting semantic camera
         camera_bp = world.get_blueprint_library().find('sensor.camera.semantic_segmentation')
@@ -223,12 +282,12 @@ def generate_training_data():
         camera_sem.listen(lambda image: sem_callback(image,camera_data))
 
 
-        #setting RGB Camera 
+        # setting RGB Camera 
         camera_bp = world.get_blueprint_library().find('sensor.camera.rgb')
         camera_bp.set_attribute('image_size_x', str(settings.image_w)) 
         camera_bp.set_attribute('image_size_y', str(settings.image_h))
         camera_init_trans = carla.Transform(carla.Location(z=CAMERA_POS_Z,x=CAMERA_POS_X))
-        #this creates the camera in the sim
+        # this creates the camera in the sim
         camera = world.spawn_actor(camera_bp,camera_init_trans,attach_to=ego_vehicle)
         image_w = camera_bp.get_attribute('image_size_x').as_int()
         image_h = camera_bp.get_attribute('image_size_y').as_int()
@@ -255,7 +314,7 @@ def generate_training_data():
         route = select_random_route(world, start_point,spawn_points)
         curr_wp = 0
 
-        while curr_wp<len(route)-6 and img_counter < settings.amount_training_data_to_generate:
+        while curr_wp<len(route)-10 and img_counter < settings.amount_training_data_to_generate:
             # move the car to next waypoint
             curr_wp +=1
             ego_vehicle.set_transform(route[curr_wp][0].transform)
@@ -277,13 +336,14 @@ def generate_training_data():
             #img_counter += 1
             time_grab = time.time_ns()
             cv2.waitKey(10)
-            #cv2.imwrite(f'C:/Users/Daniel/Documents/PrivateProjects/CARLA/Code/out/semseg1/{str(img_counter)}.png', sem_im)
-            #cv2.imwrite(f'C:/Users/Daniel/Documents/PrivateProjects/CARLA/Code/out/camera1/{str(img_counter)}.png',  image)
+            #cv2.imwrite(f'C:/Users/Daniel/Documents/PrivateProjects/CARLA/Code/out/masks/{str(img_counter)}.png', sem_im)
+            #cv2.imwrite(f'C:/Users/Daniel/Documents/PrivateProjects/CARLA/Code/out/images/{str(img_counter)}.png',  image)
             training_data_dict.append({"index": img_counter, "steering_angle": round(steer_input, 2), "car_yaw": ego_vehicle.get_transform().rotation.yaw})
-            image = cv2.putText(image, 'Steer: '+str(steer_input), settings.org, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-            image = cv2.putText(image, 'yaw: '+str(ego_vehicle.get_transform().rotation.yaw), settings.org2, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+            image = cv2.putText(image, 'Steer: '+str(steer_input), settings.text_loc1, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+            image = cv2.putText(image, 'yaw: '+str(ego_vehicle.get_transform().rotation.yaw), settings.text_loc2, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
             cv2.imshow('RGB Camera', image)
 
+        exit_clean()    #Clean up after each individual run
     return
     while img_counter < 100:
         start_point = random.choice(spawn_points)
