@@ -1,4 +1,5 @@
 import sys
+import os
 import carla
 from carla import command
 import random
@@ -7,10 +8,21 @@ from numpy import random
 import cv2
 import time
 import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
+from torchvision import transforms
+from torch.utils.data import DataLoader
+import datetime
+import re
 
 import settings
 import generateTraffic
 import generateTrainingImages
+import dataloader.rgbcameradataloader as customDataset
+import networks.camera.base_model as base_model
 
 #sys.path.append('C:\\Users\\Daniel\\Documents\\PrivateProjects\\CARLA\\CARLA_0.9.15\\WindowsNoEditor\\PythonAPI\\carla') # tweak to where you put carla
 sys.path.append('C:/Users/Daniel/Documents/PrivateProjects/CARLA/CARLA_0.9.15/WindowsNoEditor/PythonAPI/carla') # tweak to where you put carla
@@ -27,12 +39,48 @@ def sem_callback(image,data_dictionary):
     image.convert(carla.ColorConverter.CityScapesPalette)
     data_dictionary['sem_image'] = np.reshape(np.copy(image.raw_data),(image.height,image.width,4))
 
+#Training function for the unet
+def train_UNet():
+    # Train LightningModule
+    max_epochs = settings.epochs
 
+    data_module = customDataset.CustomDataLoader(root_dir=settings.sem_seg_data_path, batch_size=8)
+    model = base_model.LightningUNet(in_channels=3, out_channels=29)
+    checkpoint_callback = ModelCheckpoint(monitor='val_loss')
+    trainer = pl.Trainer(accelerator="gpu", devices=[0], max_epochs=max_epochs, callbacks=[checkpoint_callback])
+    trainer.fit(model, data_module)
+    train_acc = trainer.callback_metrics['train_accuracy'].item()
+    val_acc = trainer.callback_metrics['val_accuracy'].item()
 
+    # Save the trained model
+    date = datetime.datetime.now().strftime('%d-%m-%Y')
+    newpath = f'./checkpoints/unet/{date}_{max_epochs}Epochs' 
+    if not os.path.exists(newpath):
+        os.makedirs(newpath)
+
+    highest_number = 0
+    for filename in os.listdir(newpath):
+        if filename.endswith('.pth'):
+            try:
+                number = int(re.findall("\d+", filename.split('.')[0])[0])
+                if number > highest_number:
+                    highest_number = number
+            except ValueError:
+                continue
+
+    torch.save(model.state_dict(), f'{newpath}/unetckpt_{highest_number + 1}.pth')
+
+    # Test the model
+    trainer.test(model, data_module)
+
+    # Print the final accuracy
+    print(f"Final Training Accuracy: {train_acc}")
+    print(f"Final Validation Accuracy: {val_acc}")
+    print(f"Final Test Accuracy: {trainer.callback_metrics['test_accuracy'].item()}")
 
 if __name__ == '__main__':
-
-    if settings.generate_sem_seg_train_data == True:
+    torch.set_float32_matmul_precision('medium') # To utilize the 4070 TI Supers tensor cores
+    if settings.mode == "GenerateData":
         generateTrainingImages.generate_training_data()
         exit()
 
@@ -44,6 +92,9 @@ if __name__ == '__main__':
                 'image_h': settings.image_h
                 }
     
+    if settings.mode == "TrainSemUNet":
+        train_UNet()
+        exit()
     # Connect to the client and retrieve the world object
     client = carla.Client('localhost', 2000)
     client.load_world("Town02", reset_settings=False, map_layers=carla.MapLayer.All)
@@ -96,7 +147,6 @@ if __name__ == '__main__':
         
         # this actually opens a live stream from the camera
         camera.listen(lambda image: camera_callback(image, data_dict))
-
 
     #spawn a LiDAR Sensor
     #lidar_bp = world.get_blueprint_library().find('sensor.lidar.ray_cast')
@@ -194,4 +244,5 @@ if __name__ == '__main__':
     client.apply_batch([command.DestroyActor(x) for x in all_id])
 
     time.sleep(0.5)
+
 

@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import logging
+import carla.libcarla
 from numpy import random
 
 import settings
@@ -17,10 +18,11 @@ def generate_traffic(client, number_cars, number_pedestrians):
     vehicles_list = []
     walkers_list = []
     all_id = []
+    results = []
 
     client.set_timeout(10.0)
-    settings.synchronous_master = False
-    settings.asynch = True
+    settings.synchronous_master = True
+    settings.asynch = False
     random.seed(0)
 
     world = client.get_world()
@@ -28,6 +30,7 @@ def generate_traffic(client, number_cars, number_pedestrians):
     traffic_manager = client.get_trafficmanager(8000)
     traffic_manager.set_global_distance_to_leading_vehicle(2.5)
     world_settings = world.get_settings()
+    traffic_manager.set_synchronous_mode(True)
     print("You are currently in asynchronous mode. If this is a traffic simulation, \
         you could experience some issues. If it's not working correctly, switch to synchronous \
         mode by using traffic_manager.set_synchronous_mode(True)")
@@ -48,7 +51,7 @@ def generate_traffic(client, number_cars, number_pedestrians):
 
     spawn_points = world.get_map().get_spawn_points()
     number_of_spawn_points = len(spawn_points)
-
+    print(f"spawn points: {number_of_spawn_points}")
     if number_cars < number_of_spawn_points:
         random.shuffle(spawn_points)
     elif number_cars > number_of_spawn_points:
@@ -83,15 +86,15 @@ def generate_traffic(client, number_cars, number_pedestrians):
             blueprint.set_attribute('role_name', 'autopilot')
 
         # spawn the cars and set their autopilot and light state all together
-        vehicle_batch.append(SpawnActor(blueprint, transform)
-            .then(SetAutopilot(FutureActor, True, traffic_manager.get_port())))
+        vehicle_batch.append(SpawnActor(blueprint, transform))
+        #vehicle_batch.append(SpawnActor(blueprint, transform)
+        #    .then(SetAutopilot(FutureActor, True, traffic_manager.get_port())))
 
     for response in client.apply_batch_sync(vehicle_batch, settings.synchronous_master):
         if response.error:
             logging.error(response.error)
         else:
             vehicles_list.append(response.actor_id)
-
     # Set automatic vehicle lights update if specified
     if False:
         all_vehicle_actors = world.get_actors(vehicles_list)
@@ -102,24 +105,29 @@ def generate_traffic(client, number_cars, number_pedestrians):
     # Spawn Walkers
     # -------------
     # some settings
-    percentagePedestriansRunning = 0.0      # how many pedestrians will run
-    percentagePedestriansCrossing = 0.0     # how many pedestrians will walk through the road
+    percentagePedestriansRunning = 0.7      # how many pedestrians will run
+    percentagePedestriansCrossing = 0.9     # how many pedestrians will walk through the road
     #Option to have seeded pedestrian spawns and paths
     if False:
         world.set_pedestrians_seed(0)
         random.seed(0)
     # 1. take all the random locations to spawn
     spawn_points = []
-    for i in range(number_pedestrians):
+    for i in range(1000):
         spawn_point = carla.Transform()
-        loc = world.get_random_location_from_navigation()
-        if (loc != None):
-            spawn_point.location = loc
+        loc = None
+        while loc == None or loc in spawn_points:
+            loc = world.get_random_location_from_navigation()
+        if (loc != None) and not loc in spawn_points:
+            spawn_point.location = loc 
             spawn_points.append(spawn_point)
     # 2. we spawn the walker object
     walker_batch = []
     walker_speed = []
-    for spawn_point in spawn_points:
+    world = client.get_world()
+    world_map = world.get_map()
+
+    for pedestrian in range(0,number_pedestrians):
         walker_bp = random.choice(blueprintsWalkers)
         # set as not invincible
         if walker_bp.has_attribute('is_invincible'):
@@ -128,21 +136,35 @@ def generate_traffic(client, number_cars, number_pedestrians):
         if walker_bp.has_attribute('speed'):
             if (random.random() > percentagePedestriansRunning):
                 # walking
-                walker_speed.append(walker_bp.get_attribute('speed').recommended_values[1])
+                speed = walker_bp.get_attribute('speed')
+                walker_speed.append(str(float(walker_bp.get_attribute('speed').recommended_values[2]) + 16.0))
             else:
                 # running
-                walker_speed.append(walker_bp.get_attribute('speed').recommended_values[2])
+                walker_speed.append(str(float(walker_bp.get_attribute('speed').recommended_values[1]) + 8.0))
         else:
             print("Walker has no speed")
             walker_speed.append(0.0)
-        walker_batch.append(SpawnActor(walker_bp, spawn_point))
-    results = client.apply_batch_sync(walker_batch, True)
+        walker = None
+        try_count = 0
+        crosswalk_spawnpoints = world_map.get_crosswalks()
+        while walker == None and try_count < 20:
+            spawn_point_n = carla.Transform()
+            #spawn_point_n.rotation = carla.libcarla.Rotation(5.0,0.0,0.0)
+            #spawn_point_n.location = world.get_random_location_from_navigation()
+            spawn_point_n = random.choice(spawn_points)
+            spawn_point_n.location.z += 1.0
+            walker = world.try_spawn_actor(walker_bp, spawn_point_n)
+            try_count += 1
+        results.append(walker)
+        #walker_batch.append(SpawnActor(walker_bp, spawn_point))
+    #results = client.apply_batch_sync(walker_batch, True)
     walker_speed2 = []
     for i in range(len(results)):
-        if results[i].error:
-            logging.error(results[i].error)
-        else:
-            walkers_list.append({"id": results[i].actor_id})
+        #if results[i].error:
+        #    logging.error(results[i].error)
+        #else:
+            #walkers_list.append({"id": results[i].actor_id})
+            walkers_list.append({"id": results[i].id})
             walker_speed2.append(walker_speed[i])
     walker_speed = walker_speed2
     # 3. we spawn the walker controller
@@ -167,24 +189,36 @@ def generate_traffic(client, number_cars, number_pedestrians):
         world.wait_for_tick()
     else:
         world.tick()
+    
 
     # 5. initialize each controller and set target to walk to (list is [controler, actor, controller, actor ...])
     # set how many pedestrians can cross the road
     world.set_pedestrians_cross_factor(percentagePedestriansCrossing)
     for i in range(0, len(all_id), 2):
         # start walker
+        actor = all_actors[i]
         all_actors[i].start()
-        # set walk to random point
-        all_actors[i].go_to_location(world.get_random_location_from_navigation())
+
+        # set walk to random point that isn't our spawn
+        location = None
+        while all_actors[i].parent.bounding_box.location == location or location == None:
+            #location = random.choice(crosswalk_spawnpoints)
+            location = world.get_random_location_from_navigation()
+
+        actor_controller_location = all_actors[i].parent.bounding_box.location
+        print("Issues here?")
+        all_actors[i].go_to_location(location) # <-- This is where the crash happens
+        print("Nope")
         # max speed
         all_actors[i].set_max_speed(float(walker_speed[int(i/2)]))
+
+        
 
     print('spawned %d vehicles and %d walkers, press Ctrl+C to exit.' % (len(vehicles_list), len(walkers_list)))
 
     # Example of how to use Traffic Manager parameters
     traffic_manager.global_percentage_speed_difference(30.0)
-
-    return vehicles_list, walkers_list, all_id
+    return vehicles_list, walkers_list, all_id, batch
 
 
     

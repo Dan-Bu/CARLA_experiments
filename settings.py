@@ -1,13 +1,17 @@
 import cv2
 
-#Sets the mode - 0 is live data usage, 1 is recording mode to generate training data
-generate_sem_seg_train_data = 1
+#Sets the mode - "Live" is live data usage, "GenerateData" is recording mode to generate training data, "TrainSemUNet" trains the unet for semseg
+mode = "TrainSemUNet"
+images_from_fixed_routes = False # This also means no traffic other than our car.
 
-#Training parameters
-amount_training_data_to_generate = 50
+#Training set parameters
+amount_training_data_to_generate = 1500
+sem_seg_data_path = './out/semseg'
+epochs = 42
+dataloader_num_workers = 8
 
 #Camera 1 image size
-image_h = 360
+image_h = 400
 image_w = 640
 
 #Simulator settings

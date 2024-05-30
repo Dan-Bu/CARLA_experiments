@@ -15,10 +15,12 @@ import numpy as np #in this example to change image representation - re-shaping
 import math
 import sys
 import random
+import os
 sys.path.append('C:/Users/Daniel/Documents/PrivateProjects/CARLA/CARLA_0.9.15/WindowsNoEditor/PythonAPI/carla') # tweak to where you put carla
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 
 import settings
+import generateTraffic
 
 SPEED_THRESHOLD = 2 #defines when we get close to desired speed so we drop the throttle
 
@@ -151,7 +153,17 @@ def select_random_route(world, position,locs):
     result_route = random.choice(route_list)
     return result_route
 
-
+def find_highest_number_in_filenames(folder_path):
+    highest_number = 0
+    for filename in os.listdir(folder_path):
+        if filename.endswith('.png'):
+            try:
+                number = int(filename.split('.')[0])
+                if number > highest_number:
+                    highest_number = number
+            except ValueError:
+                continue
+    return highest_number
 
 def generate_training_data():
     #set up data dict
@@ -166,28 +178,30 @@ def generate_training_data():
     #client.set_timeout(25)
     maps =  ["Town01", "Town02", "Town03", "Town04", "Town05", "Town06", "Town07"]
 
-    client.load_world(maps[2], reset_settings=False, map_layers=carla.MapLayer.All)
+    #client.load_world(maps[0], reset_settings=False, map_layers=carla.MapLayer.All)
 
+    test_data_offset = find_highest_number_in_filenames("./out/semseg_val/images") + 1
 
     # get world and spawn points
     world = client.get_world()
 
     # ensure sync mode on 
-    world_settings = world.get_settings()
-    world_settings.synchronous_mode = True
-    world_settings.fixed_delta_seconds = 0.1
-    world_settings.no_rendering_mode = False
-    world.apply_settings(world_settings)
+    if settings.images_from_fixed_routes:
+        world_settings = world.get_settings()
+        world_settings.synchronous_mode = True
+        world_settings.fixed_delta_seconds = 0.1
+        world_settings.no_rendering_mode = False
+        world.apply_settings(world_settings)
 
     spawn_points = world.get_map().get_spawn_points()
 
     #clean up any existing cars
     for actor in world.get_actors().filter('*vehicle*'):
         actor.destroy()
+    for actor in world.get_actors().filter('*walker*'):
+        actor.destroy()
 
-    #look for a blueprint of dodge charger car
-    vehicle_bp = world.get_blueprint_library().find('vehicle.dodge.charger_2020')
-    vehicle_bp.set_attribute('role_name', 'hero')
+    
 
    
     
@@ -195,28 +209,32 @@ def generate_training_data():
     def exit_clean():
         #clean up
         cv2.destroyAllWindows()
-        camera_sem.stop()
         for sensor in world.get_actors().filter('*sensor*'):
             sensor.destroy()
         for actor in world.get_actors().filter('*vehicle*'):
             actor.destroy()
+        for actor in world.get_actors().filter('*walker*'):
+            actor.destroy()
         return None
 
-    
+    exit_clean()
 
 
     # main loop
     img_counter = 0
     quit = False
     training_data_dict = [] # Dictionary that holds the metadata used for training.
-    while img_counter < settings.amount_training_data_to_generate:
+    iteration_num = 1
 
+    def per_cycle_setup():
         # Load a random map
+        world.unload_map_layer(carla.MapLayer.All) #Required to unload navigation data from previous map
         map_index = random.randint(0,len(maps)-1)
+        map_index = 2       
         success = False
         while success == False:
             try:
-                client.load_world(maps[map_index], reset_settings=False, map_layers=carla.MapLayer.All)
+                client.load_world_if_different(maps[map_index], reset_settings=False, map_layers=carla.MapLayer.All)
                 success = True
 
             except RuntimeError:
@@ -226,11 +244,17 @@ def generate_training_data():
         weather = world.get_weather()
         # Set up random weather
         weather.wind_strength = random.randint(0,100)
-        weather.sun_altitude_angle = random.randint(-90, 90) # Time of day
-        weather.sun_azimuth_angle = random.randint(0, 360)
+        if random.randint(0,3) == 3:    # Nighttime?
+            weather.sun_altitude_angle = random.randint(181, 360) # Time of day
+            weather.sun_azimuth_angle = 90
+        else:                           # Daytime?
+            weather.sun_altitude_angle = random.randint(20, 160) # Time of day. 90 is noon, 0 morning, 180 evening
+            weather.sun_azimuth_angle = -90
+
         rain = False
         weather.precipitation = 0
         weather.precipation_deposits = 0
+        weather.cloudiness = random.randint(0, 40)
         if random.randint(0,2) == 2:    # Check if we have rain
             weather.precipitation  = random.randint(0,100)
             weather.precipation_deposits = random.randint(0,100)
@@ -251,8 +275,14 @@ def generate_training_data():
                 weather.wetness = random.randint(0, 10) # Wetness of the scene
 
         world.set_weather(weather)
+
+        # Determine spawn point for the ego vehicle
+#        spawn_points = world.get_map().get_spawn_points()
         start_point = random.choice(spawn_points)
-        start_point = spawn_points[1]
+
+        #look for a blueprint of dodge charger car
+        vehicle_bp = world.get_blueprint_library().find('vehicle.dodge.charger_2020')
+        vehicle_bp.set_attribute('role_name', 'hero')
         ego_vehicle = None
         while ego_vehicle == None:
             ego_vehicle = world.try_spawn_actor(vehicle_bp, start_point)
@@ -269,8 +299,15 @@ def generate_training_data():
 
         #command.SetVehicleLightState(ego_vehicle, light_state) #This is broken for some reason?
         ego_vehicle.set_light_state(light_state)
-        
+        #---Create Spectator---
+        spectator_bp = world.get_blueprint_library().find('sensor.camera.rgb')
+        spectator_transform = carla.Transform(carla.Location(x=-5, z=2), carla.Rotation(pitch=-15))
 
+        spectator = world.spawn_actor(spectator_bp, spectator_transform, attach_to=ego_vehicle)
+
+        return ego_vehicle, start_point, spectator_transform, spectator
+    
+    def sensor_setup():
         # setting semantic camera
         camera_bp = world.get_blueprint_library().find('sensor.camera.semantic_segmentation')
         camera_bp.set_attribute('image_size_x', str(settings.image_w)) # this ratio works in CARLA 9.13 on Windows
@@ -295,151 +332,129 @@ def generate_training_data():
         # this actually opens a live stream from the camera
         camera.listen(lambda image: camera_callback(image,camera_data))
 
-        #---Set Autopilot---
-        #tm = client.get_trafficmanager(8000)
-        #tm_port = tm.get_port()
-        #ego_vehicle.set_autopilot(True, tm_port)
-
-
         #---Advance the world tick---
         world.tick()
+        return camera, camera_sem
 
-        #---Create the CV2 windows---
-        cv2.namedWindow('RGB Camera',cv2.WINDOW_AUTOSIZE)
-        cv2.imshow('RGB Camera',camera_data['rgb_image'])
+       
 
+        
 
-        prev_position = ego_vehicle.get_transform()
-        #---getting a random route for the car---
-        route = select_random_route(world, start_point,spawn_points)
-        curr_wp = 0
+    if settings.images_from_fixed_routes:
+        while img_counter < settings.amount_training_data_to_generate:
+            
+            ego_vehicle, start_point, spectator_transform, spectator = per_cycle_setup()
+            camera, camera_sem = sensor_setup()
+            
+            prev_position = ego_vehicle.get_transform()
+            #---getting a random route for the car---
+            route = select_random_route(world, start_point,spawn_points)
+            curr_wp = 0
+            quit = False
+             #---Create the CV2 windows---
+            cv2.namedWindow('RGB Camera',cv2.WINDOW_AUTOSIZE)
+            cv2.imshow('RGB Camera',camera_data['rgb_image'])
 
-        while curr_wp<len(route)-10 and img_counter < settings.amount_training_data_to_generate:
-            # move the car to next waypoint
-            curr_wp +=1
-            ego_vehicle.set_transform(route[curr_wp][0].transform)
-            #time.sleep(2)
+            while curr_wp<len(route)-10 and img_counter < 1000 * iteration_num and img_counter < settings.amount_training_data_to_generate:
+                # move the car to next waypoint
+                curr_wp +=1
+                ego_vehicle.set_transform(route[curr_wp][0].transform)
+                #time.sleep(2)
+                world.tick()
+
+                # Update the camera's location and rotation to match the ego_vehicle
+                ego_transform = ego_vehicle.get_transform()
+                spectator_transform.location = ego_transform.location + carla.Location(x=-5, z=2)
+                spectator_transform.rotation = ego_transform.rotation + carla.Rotation(pitch=-15)
+
+                # Set the camera's new transform
+                spectator.set_transform(spectator_transform)
+
+                # first position the car on the route and take normal shot (without spinning)
+                _, predicted_angle = get_proper_angle(ego_vehicle,curr_wp+5,route)
+                steer_input = predicted_angle
+                # limit steering to max angel, say 40 degrees
+                if predicted_angle<-MAX_STEER_DEGREES:
+                    steer_input = -MAX_STEER_DEGREES
+                elif predicted_angle>MAX_STEER_DEGREES:
+                    steer_input = MAX_STEER_DEGREES
+                gen_dir_angle = get_distant_angle(ego_vehicle,curr_wp,route,30)
+                initial_yaw = ego_vehicle.get_transform().rotation.yaw
+                sem_im = camera_data['sem_image']
+                image = camera_data['rgb_image']
+                #img_counter += 1
+                time_grab = time.time_ns()
+                cv2.waitKey(10)
+                cv2.imwrite(f'{settings.sem_seg_data_path}/masks/{str(img_counter)}.png', sem_im)
+                cv2.imwrite(f'{settings.sem_seg_data_path}/images/{str(img_counter)}.png',  image)
+                training_data_dict.append({"index": img_counter, "steering_angle": round(steer_input, 2), "car_yaw": ego_vehicle.get_transform().rotation.yaw})
+                image = cv2.putText(image, 'Steer: '+str(steer_input), settings.text_loc1, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                image = cv2.putText(image, 'yaw: '+str(ego_vehicle.get_transform().rotation.yaw), settings.text_loc2, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                image = cv2.putText(image, 'image number: '+str(img_counter), settings.text_loc3, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                cv2.imshow('RGB Camera', image)
+                if cv2.waitKey(0) == ord('q'):
+                            quit = True
+                            break
+            
+            iteration_num += 1
+            exit_clean()    #Clean up after each individual run
+            if quit:
+                break
+
+    else:
+        while img_counter < settings.amount_training_data_to_generate:
+
+            ego_vehicle, start_point, spectator_transform, spectator = per_cycle_setup()
+            camera, camera_sem = sensor_setup()
+            vehicles_list, walkers_list, all_id, batch = generateTraffic.generate_traffic(client, 40, 20)
+
             world.tick()
+            time.sleep(2)        
+            
+            # Set autopilot on for all vehicles so they drive around.
+            tm = client.get_trafficmanager(8000)
+            tm_port = tm.get_port()
+            for vehicle in world.get_actors().filter('*vehicle*'):
+                vehicle.set_autopilot(True, tm_port)
 
-            # first position the car on the route and take normal shot (without spinning)
-            _, predicted_angle = get_proper_angle(ego_vehicle,curr_wp+5,route)
-            steer_input = predicted_angle
-            # limit steering to max angel, say 40 degrees
-            if predicted_angle<-MAX_STEER_DEGREES:
-                steer_input = -MAX_STEER_DEGREES
-            elif predicted_angle>MAX_STEER_DEGREES:
-                steer_input = MAX_STEER_DEGREES
-            gen_dir_angle = get_distant_angle(ego_vehicle,curr_wp,route,30)
-            initial_yaw = ego_vehicle.get_transform().rotation.yaw
-            sem_im = camera_data['sem_image']
-            image = camera_data['rgb_image']
-            #img_counter += 1
-            time_grab = time.time_ns()
-            cv2.waitKey(10)
-            #cv2.imwrite(f'C:/Users/Daniel/Documents/PrivateProjects/CARLA/Code/out/masks/{str(img_counter)}.png', sem_im)
-            #cv2.imwrite(f'C:/Users/Daniel/Documents/PrivateProjects/CARLA/Code/out/images/{str(img_counter)}.png',  image)
-            training_data_dict.append({"index": img_counter, "steering_angle": round(steer_input, 2), "car_yaw": ego_vehicle.get_transform().rotation.yaw})
-            image = cv2.putText(image, 'Steer: '+str(steer_input), settings.text_loc1, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-            image = cv2.putText(image, 'yaw: '+str(ego_vehicle.get_transform().rotation.yaw), settings.text_loc2, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-            cv2.imshow('RGB Camera', image)
-
-        exit_clean()    #Clean up after each individual run
-    return
-    while img_counter < 100:
-        start_point = random.choice(spawn_points)
-        ego_vehicle = world.try_spawn_actor(vehicle_bp[0], start_point)
-        time.sleep(2)
-        # setting semantic camera
-        camera_bp = world.get_blueprint_library().find('sensor.camera.semantic_segmentation')
-        camera_bp.set_attribute('image_size_x', '640') # this ratio works in CARLA 9.13 on Windows
-        camera_bp.set_attribute('image_size_y', '480')
-        camera_bp.set_attribute('fov', '90')
-        camera_init_trans = carla.Transform(carla.Location(z=CAMERA_POS_Z,x=CAMERA_POS_X))
-        camera_sem = world.spawn_actor(camera_bp,camera_init_trans,attach_to=ego_vehicle)
-        image_w = 640
-        image_h = 480
-
-        camera_data = {'sem_image': np.zeros((image_h,image_w,4)),
-                       'rgb_image': np.zeros((image_h,image_w,4))}
-
-            # this actually opens a live stream from the cameras
-        camera_sem.listen(lambda image: sem_callback(image,camera_data))
-        # adding collision sensor
-
-        #setting RGB Camera 
-        camera_bp = world.get_blueprint_library().find('sensor.camera.rgb')
-        camera_bp.set_attribute('image_size_x', '640') 
-        camera_bp.set_attribute('image_size_y', '360')
-        camera_init_trans = carla.Transform(carla.Location(z=CAMERA_POS_Z,x=CAMERA_POS_X))
-        #this creates the camera in the sim
-        camera = world.spawn_actor(camera_bp,camera_init_trans,attach_to=ego_vehicle)
-        image_w = camera_bp.get_attribute('image_size_x').as_int()
-        image_h = camera_bp.get_attribute('image_size_y').as_int()
-    
-        # this actually opens a live stream from the camera
-        camera.listen(lambda image: camera_callback(image,camera_data))
-        cv2.namedWindow('RGB Camera',cv2.WINDOW_AUTOSIZE)
-        cv2.imshow('RGB Camera',camera_data['rgb_image'])
-
-
-
-        prev_position = ego_vehicle.get_transform()
-        # getting a random route for the car
-        route = select_random_route(world, start_point,spawn_points)
-        curr_wp = 0
-        world.tick()
-
-        while curr_wp<len(route)-6 and img_counter < 100:
-
-            # move the car to next waypoint
-            curr_wp +=1
-            ego_vehicle.set_transform(route[curr_wp][0].transform)
-            #time.sleep(2)
-            world.tick()
-
-            # first position the car on the route and take normal shot (without spinning)
-            _, predicted_angle = get_proper_angle(ego_vehicle,curr_wp+5,route)
-            steer_input = predicted_angle
-            # limit steering to max angel, say 40 degrees
-            if predicted_angle<-MAX_STEER_DEGREES:
-                steer_input = -MAX_STEER_DEGREES
-            elif predicted_angle>MAX_STEER_DEGREES:
-                steer_input = MAX_STEER_DEGREES
-            gen_dir_angle = get_distant_angle(ego_vehicle,curr_wp,route,30)
-            initial_yaw = ego_vehicle.get_transform().rotation.yaw
-            sem_im = camera_data['sem_image']
-            image = camera_data['rgb_image']
-            img_counter += 1
-            time_grab = time.time_ns()
-            cv2.imwrite('_img/%06d_%s_%s.png' % (time_grab, gen_dir_angle,round(steer_input,0)), sem_im)
-            cv2.imshow('RGB Camera',image)
-             #only ouside intersections we spin the car around
-            if route[curr_wp][0].is_intersection==False and route[curr_wp][0].is_junction==False:
-                #grab images while spinning the car around
-                for i in range(3):
-                    # Carla Tick
-                    trans = ego_vehicle.get_transform()
-                    angle_adj = random.randrange(-MAX_SPIN, MAX_SPIN, 1)
-                    trans.rotation.yaw = initial_yaw +angle_adj 
-                    ego_vehicle.set_transform(trans)
-                    world.tick()
-                    time.sleep(2)  #these delays seem to be necessary for the car to take the position before a shot is taken
-                    steer_input = predicted_angle - angle_adj # we put the opposite to correct back to straight
-                    if steer_input<-MAX_STEER_DEGREES:
-                        steer_input = -MAX_STEER_DEGREES
-                    elif steer_input>MAX_STEER_DEGREES:
-                        steer_input = MAX_STEER_DEGREES
-                    sem_im = camera_data['sem_image']
+            ego_vehicle.set_autopilot(True, tm_port)
+             #---Create the CV2 windows---
+            cv2.namedWindow('RGB Camera',cv2.WINDOW_AUTOSIZE)
+            cv2.imshow('RGB Camera',camera_data['rgb_image'])
+            quit = False
+            prev_position = ego_vehicle.get_transform().location
+            tick_counter = 0
+            while img_counter < settings.amount_training_data_to_generate:
+                world.tick()
+                sem_im = camera_data['sem_image']
+                image = camera_data['rgb_image']
+                
+                time_grab = time.time_ns()
+                cv2.waitKey(10)
+                ego_transform = ego_vehicle.get_transform()
+                tick_counter+=1
+                if abs(ego_transform.location.x - prev_position.x) + abs(ego_transform.location.y - prev_position.y) + abs(ego_transform.location.z - prev_position.z) > 10.0:    # only take a picture after a certain amount of movement
+                    cv2.imwrite(f'{settings.sem_seg_data_path}/masks/{str(test_data_offset + img_counter)}.png', sem_im)
+                    cv2.imwrite(f'{settings.sem_seg_data_path}/images/{str(test_data_offset + img_counter)}.png',  image)
                     img_counter += 1
-                    time_grab = time.time_ns()
-                    cv2.imwrite('out/semCam/%06d_%s_%s.png' % (time_grab, gen_dir_angle,round(steer_input,0)), sem_im)
-                    image = camera_data['rgb_image']
-                    image = cv2.putText(image, 'Steer: '+str(steer_input), (30,30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-                    cv2.imshow('RGB Camera',image)
-                    if cv2.waitKey(0) == ord('q'):
-                        quit = True
-                        break
-                    
-        if quit:
-            break
-    exit_clean()
+                    prev_position = ego_transform.location
+                    tick_counter = 0
+                elif tick_counter > 20000:
+                    break
+                training_data_dict.append({"index": img_counter, "steering_angle": round(0, 2), "car_yaw": ego_vehicle.get_transform().rotation.yaw})
+                image = cv2.putText(image, f'x: {str(ego_vehicle.get_transform().location.x)}, y: {str(ego_vehicle.get_transform().location.y)}, z: {str(ego_vehicle.get_transform().location.z)}', settings.text_loc1, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                image = cv2.putText(image, 'yaw: '+str(ego_vehicle.get_transform().rotation.yaw), settings.text_loc2, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                image = cv2.putText(image, 'image number: '+str(img_counter), settings.text_loc3, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+
+                cv2.imshow('RGB Camera', image)
+                
+                if cv2.waitKey(10) == ord('q'):
+                            quit = True
+                            break
+                            
+            #exit_clean()    #Clean up after each individual run
+            tm.shut_down()
+            iteration_num +=1
+            if quit:
+                break        
+    return
