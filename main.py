@@ -13,6 +13,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning import loggers as pl_loggers
+from PIL import Image
+
 from torchvision import transforms
 from torch.utils.data import DataLoader
 import datetime
@@ -47,7 +50,8 @@ def train_UNet():
     data_module = customDataset.CustomDataLoader(root_dir=settings.sem_seg_data_path, batch_size=8)
     model = base_model.LightningUNet(in_channels=3, out_channels=29)
     checkpoint_callback = ModelCheckpoint(monitor='val_loss')
-    trainer = pl.Trainer(accelerator="gpu", devices=[0], max_epochs=max_epochs, callbacks=[checkpoint_callback])
+    tb_logger = pl_loggers.TensorBoardLogger("lightning_logs", name="tb_log", default_hp_metric=False)
+    trainer = pl.Trainer(accelerator="gpu", devices=[0], max_epochs=max_epochs, callbacks=[checkpoint_callback], logger=tb_logger)
     trainer.fit(model, data_module)
     train_acc = trainer.callback_metrics['train_accuracy'].item()
     val_acc = trainer.callback_metrics['val_accuracy'].item()
@@ -67,23 +71,54 @@ def train_UNet():
                     highest_number = number
             except ValueError:
                 continue
-
-    torch.save(model.state_dict(), f'{newpath}/unetckpt_{highest_number + 1}.pth')
-
+                  
     # Test the model
     trainer.test(model, data_module)
-
+    test_acc = trainer.callback_metrics['test_accuracy'].item()
     # Print the final accuracy
     print(f"Final Training Accuracy: {train_acc}")
     print(f"Final Validation Accuracy: {val_acc}")
-    print(f"Final Test Accuracy: {trainer.callback_metrics['test_accuracy'].item()}")
+    print(f"Final Test Accuracy: {test_acc}")
 
-if __name__ == '__main__':
-    torch.set_float32_matmul_precision('medium') # To utilize the 4070 TI Supers tensor cores
-    if settings.mode == "GenerateData":
-        generateTrainingImages.generate_training_data()
-        exit()
+def test_on_single_image():
+    # define color mask
+    reverse_dictionary = {v:k for k,v in settings.color_to_class.items()}
 
+
+    # display the camera and segmentation image
+    data_module = customDataset.CustomDataLoader(root_dir=settings.sem_seg_data_path, batch_size=8)
+    data_module.setup()
+    image = data_module.train_dataset.__getitem__(0)
+    to_pil = transforms.ToPILImage()
+    visual_img = to_pil(image[0])
+    visual_mask = image[1].argmax(dim=1)
+    class_indices_mask = np.zeros((settings.image_h, settings.image_w, 3), dtype=np.uint8)
+    for class_idx, color in reverse_dictionary.items():
+        class_indices_mask[visual_mask[0] == class_idx] = color
+    visual_mask = class_indices_mask
+    visual_mask = to_pil(visual_mask)
+    
+    
+    # run the network
+    base_model.LightningUNet(in_channels=3, out_channels=29)
+    model = base_model.LightningUNet.load_from_checkpoint("lightning_logs/tb_log/version_5/checkpoints/epoch=3-step=3152.ckpt", in_channels=3, out_channels=29)   
+    model.eval()
+    with torch.no_grad():
+        input_image = image[0].unsqueeze(0)
+        input_image = input_image.cuda()
+        output_tensor = model(input_image)
+    # Map the colors to class indices
+    class_indices = np.zeros((settings.image_h, settings.image_w, 3), dtype=np.uint8)
+    output_tensor = output_tensor.cpu().argmax(dim=1)
+    for class_idx, color in reverse_dictionary.items():
+        class_indices[output_tensor[0] == class_idx] = color
+    class_indices = to_pil(class_indices)
+    visual_img.show()
+    visual_mask.show()
+    class_indices.show()
+
+
+def testrun():
     # Setup our data dictionary
     data_dict = {
                 'image' : np.zeros((settings.image_w, settings.image_h)),
@@ -117,7 +152,7 @@ if __name__ == '__main__':
     # Spawn 50 vehicles randomly distributed throughout the map 
     # for each spawn point, we choose a random vehicle from the blueprint library
     # Return values are lists of the vehicles, walkers, and all entities
-    vehicles_list, walkers_list, all_id = generateTraffic.generate_traffic(client, 50, 50)
+    vehicles_list, walkers_list, all_id, batch = generateTraffic.generate_traffic(client, 50, 50)
 
     #-----------Spawn Agent-----------    
     #Spawn the "Ego Vehicle", aka the one that we occupy as our agent.
@@ -133,7 +168,7 @@ if __name__ == '__main__':
     CAMERA_POS_X = 0.5
     camera_bp = world.get_blueprint_library().find('sensor.camera.rgb')
     camera_bp.set_attribute('image_size_x', '640') # this ratio works in CARLA 9.14 on Windows
-    camera_bp.set_attribute('image_size_y', '360')
+    camera_bp.set_attribute('image_size_y', '400')
     camera_init_trans = carla.Transform(carla.Location(z=CAMERA_POS_Z,x=CAMERA_POS_X))
     #this creates the camera in the sim
     camera = world.spawn_actor(camera_bp,camera_init_trans,attach_to=ego_vehicle)
@@ -148,38 +183,18 @@ if __name__ == '__main__':
         # this actually opens a live stream from the camera
         camera.listen(lambda image: camera_callback(image, data_dict))
 
-    #spawn a LiDAR Sensor
-    #lidar_bp = world.get_blueprint_library().find('sensor.lidar.ray_cast')
-    #lidar_bp.set_attribute('channels',str(32))
-    #lidar_bp.set_attribute('points_per_second',str(90000))
-    #lidar_bp.set_attribute('rotation_frequency',str(40))
-    #lidar_bp.set_attribute('range',str(20))
-    #lidar_location = carla.Location(0,0,2)
-    #lidar_rotation = carla.Rotation(0,0,0)
-    #lidar_transform = carla.Transform(lidar_location,lidar_rotation)
-    #lidar = world.spawn_actor(lidar_bp, lidar_transform, attach_to=ego_vehicle)
-    #
-    #lidar_frame = []
-    #if settings.generate_test_data == 1:
-    #    lidar.listen(lambda image: image.save_to_disk('out/lidar1/%06d.ply' % image.frame))
-    #else:
-    #    def lidar_callback(image,data_dict):
-    #        data_dict['lidar'] = np.copy(image.frame)
-#
-    #    lidar.listen(lambda image: lidar_callback(image, data_dict))
-
     # setting semantic camera
     camera_bp = world.get_blueprint_library().find('sensor.camera.semantic_segmentation')
     camera_bp.set_attribute('image_size_x', '640') # this ratio works in CARLA 9.13 on Windows
-    camera_bp.set_attribute('image_size_y', '360')
+    camera_bp.set_attribute('image_size_y', '400')
     camera_bp.set_attribute('fov', '90')
     camera_init_trans = carla.Transform(carla.Location(z=CAMERA_POS_Z,x=CAMERA_POS_X))
     camera_sem = world.spawn_actor(camera_bp,camera_init_trans,attach_to=ego_vehicle)
     image_w = 640
-    image_h = 360
+    image_h = 400
 
 
-        # this actually opens a live stream from the sem_camera
+    # this actually opens a live stream from the sem_camera
     camera_sem.listen(lambda image: sem_callback(image,data_dict))
 
 
@@ -194,8 +209,15 @@ if __name__ == '__main__':
     cv2.namedWindow('RGB Camera', cv2.WINDOW_AUTOSIZE)
     cv2.imshow('RGB Camera', data_dict['image'])
 
+    cv2.namedWindow('Live Segmentation', cv2.WINDOW_AUTOSIZE)
     quit = False
     show_sem_seg = False
+
+    base_model.LightningUNet(in_channels=3, out_channels=29)
+    model = base_model.LightningUNet.load_from_checkpoint("lightning_logs/tb_log/version_6/checkpoints/epoch=55-step=44128.ckpt", in_channels=3, out_channels=29)   
+    model.eval()
+    # define color mask
+    to_pil = transforms.ToPILImage()
     while True:
             #---Advance the world tick---
             world.tick()
@@ -219,17 +241,40 @@ if __name__ == '__main__':
                 image = data_dict['image']
             else: 
                 image = data_dict['sem_image']
+
+
+
+            # preprocess the image from the sensor.
+            image_rgb = torch.from_numpy(data_dict['image'])
+            image_rgb = image_rgb[:, :, 0:3]            # Remove alpha channel
+            image_rgb = image_rgb[:,:,[2,1,0]]          # Bring image in RGB from BGR format because CV2 is a special bee
+            image_rgb = image_rgb / 255.0               # Normalize to [0,1]
+            image_rgb = image_rgb.permute(2, 0, 1)      # Permute to C,H,W
+            image_rgb = image_rgb.unsqueeze(0).cuda()   # Add batch dimension
+
+
+            
+            #evaluate network
+            with torch.no_grad():
+                output_tensor = model(image_rgb).cpu().argmax(dim=1).cpu()
+
+            # Map Class to color
+            segmentation_image = map_colors(output_tensor)
             #add speed display
             image = cv2.putText(image, f'Speed: {str(int(speed))} kmh', settings.text_loc1, settings.font, settings.font_scale, settings.text_color, settings.thickness, cv2.LINE_AA)
             #Render frame
             cv2.imshow('RGB Camera', image)
+            segmentation_image = segmentation_image[:,:,[2,1,0]] # CV2 being a special BGR bee again.
+            cv2.imshow('Live Segmentation', segmentation_image)
+
+            
 
     if not settings.asynch and settings.synchronous_master:
-        settings = world.get_settings()
-        settings.synchronous_mode = False
-        settings.no_rendering_mode = False
-        settings.fixed_delta_seconds = None
-        world.apply_settings(settings)
+        world_settings = world.get_settings()
+        world_settings.synchronous_mode = False
+        world_settings.no_rendering_mode = False
+        world_settings.fixed_delta_seconds = None
+        world.apply_settings(world_settings)
 
     print('\ndestroying %d vehicles' % len(vehicles_list))
     client.apply_batch([command.DestroyActor(x) for x in vehicles_list])
@@ -244,5 +289,33 @@ if __name__ == '__main__':
     client.apply_batch([command.DestroyActor(x) for x in all_id])
 
     time.sleep(0.5)
+
+
+def map_colors(seg_output):
+    reverse_dictionary = {v:k for k,v in settings.color_to_class.items()}
+    # Map the colors to class indices
+    class_indices = np.zeros((settings.image_h, settings.image_w, 3), dtype=np.uint8)
+    for class_idx, color in reverse_dictionary.items():
+        class_indices[seg_output[0] == class_idx] = color
+
+    return class_indices
+
+if __name__ == '__main__':
+    torch.set_float32_matmul_precision('medium') # To utilize the 4070 TI Supers tensor cores
+
+    if settings.mode == "test_single_image":
+        test_on_single_image()
+        exit()
+
+
+    if settings.mode == "GenerateData":
+        generateTrainingImages.generate_training_data()
+        exit()
+
+    if settings.mode == "testrun":
+        testrun()
+        exit()
+
+
 
 

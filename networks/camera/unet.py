@@ -55,11 +55,9 @@ class UNet(nn.Module):
         merge2 = torch.cat([dc3, c2], dim=1)
         dc2 = self.deconv2(merge2)                                  # scale 1/2
         merge1 = torch.cat([dc2, c1], dim=1)
-        out = self.outconv(merge1)                                  # scale 1
+        logits = self.outconv(merge1)                                  # scale 1
 
-        out = self.softmax(out)
-
-        return out
+        return logits
     
 
 

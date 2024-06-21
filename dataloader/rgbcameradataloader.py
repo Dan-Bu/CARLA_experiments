@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 import pytorch_lightning as pl
 from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from torchvision import transforms
 import settings
 
@@ -39,38 +39,7 @@ class image_sem_seg_dataset(Dataset):
         #mask_np = np.array(mask)
 
         # Define color to class mapping
-        color_to_class = {
-            (0, 0, 0): 0,   
-            (128, 64, 128): 1,  
-            (244, 35, 232): 2, 
-            (70, 70, 70): 3,   
-            (102, 102, 156): 4,  
-            (190, 153, 153): 5, 
-            (153, 153, 153): 6,   
-            (250, 170, 30): 7,  
-            (220, 220, 0): 8, 
-            (107, 142, 35): 9,   
-            (152, 251, 152): 10,  
-            (70, 130, 180): 11, 
-            (220, 20, 60): 12,   
-            (255, 0, 0): 13,  
-            (0, 0, 142): 14, 
-            (0, 0, 70): 15,   
-            (0, 60, 100): 16,  
-            (0, 60, 100): 17, 
-            (0, 0, 230): 18,   
-            (119, 11, 32): 19,  
-            (110, 190, 160): 20,
-            (170, 120, 50): 21,   
-            (55, 90, 80): 22,  
-            (45, 60, 150): 23,
-            (157, 234, 50): 24,   
-            (81, 0, 81): 25,  
-            (150, 100, 100): 26,
-            (230, 150, 140): 27,   
-            (180, 165, 180): 28      
-            # Add more color-class mappings as needed
-        }
+        color_to_class = settings.color_to_class
 
         if isinstance(mask, Image.Image):
             mask_np = np.array(mask)
@@ -114,9 +83,20 @@ class CustomDataLoader(pl.LightningDataModule):
         ])
 
         # Load dataset
+        
         self.train_dataset = image_sem_seg_dataset(root_dir=self.root_dir, transform=transform)
-        self.val_dataset = image_sem_seg_dataset(root_dir=self.root_dir + "/val", transform=transform) 
-        self.test_dataset = image_sem_seg_dataset(root_dir=self.root_dir + "/test", transform=transform)
+        n_val = int(len(self.train_dataset) * 0.1)
+        n_test = int(len(self.train_dataset) * 0.2)
+        n_train = int(len(self.train_dataset) * 0.7)
+        train_set, val_set, test_set = random_split(self.train_dataset, [n_train, n_val, n_test], generator=torch.Generator().manual_seed(0))
+        self.train_dataset = train_set
+        self.val_dataset = val_set
+        self.test_dataset = test_set
+        #self.val_dataset = image_sem_seg_dataset(root_dir=self.root_dir, transform=transform) 
+        #self.test_dataset = image_sem_seg_dataset(root_dir=self.root_dir, transform=transform)
+#
+        #self.val_dataset = image_sem_seg_dataset(root_dir=self.root_dir + "/val", transform=transform) 
+        #self.test_dataset = image_sem_seg_dataset(root_dir=self.root_dir + "/test", transform=transform)
 
         return
 
