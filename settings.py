@@ -1,7 +1,12 @@
 import cv2
 
-#Sets the mode - "Live" is live data usage, "GenerateData" is recording mode to generate training data, "F" trains the unet for semseg. "test_single_image" runs a single image test on the segmentation network
-mode = "testrun"
+#Sets the mode 
+# - "CameraSegmentationTestrun" is live camera data segmentation
+# - "GenerateData" is recording mode to generate training data
+# - "test_single_image" runs a single image test on the segmentation network
+# - "TrainCameraDriving" trains the self-driving operator
+# - "CameraDriving" runs the self-driving operator
+mode = "CameraSegmentationTestrun"
 images_from_fixed_routes = False # This also means no traffic other than our car.
 
 #Training set parameters
