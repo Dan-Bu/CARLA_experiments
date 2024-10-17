@@ -2,9 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class UNet(nn.Module):
+class UNetDecision(nn.Module):
     def __init__(self, in_channels, out_channels):
-        super(UNet, self).__init__()
+        super(UNetDecision, self).__init__()
         
         # Encoder
         self.conv1 = self.conv_block(in_channels, 64)
@@ -26,7 +26,7 @@ class UNet(nn.Module):
             nn.ReLU(),
             nn.Linear(4000, 512),
             nn.ReLU(),
-            nn.Linear(512, 5)
+            nn.Linear(512, out_channels)
         )
         self.softmax = nn.Softmax(dim=1)
 
@@ -49,11 +49,11 @@ class UNet(nn.Module):
         c4 = self.conv4(F.max_pool2d(c3,kernel_size=2, stride=2))   # scale 1/8
         c5 = self.conv5(F.max_pool2d(c4,kernel_size=2, stride=2))   # scale 1/16
 
-        #1000 pixels x 512 channels
+        #40x25 pixels x 512 channels
 
         dw = self.depthwise(c5)
 
-        #1000 pixels x 64 channels
+        #40x25 pixels x 64 channels
 
         logits = self.fc(dw)
 

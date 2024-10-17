@@ -9,12 +9,11 @@ import numpy as np
 import settings
 import cv2
 import math
-from keras.applications.xception import Xception
-from keras.layers import Dense, GlobalAveragePooling2D
-from keras.optimizers import Adam
-from keras.models import Model
+import torch
 from collections import deque
 import tensorboard
+
+import decisionModel
 
 REPLAY_MEMORY_SIZE = 5000
 MIN_REPLAY_MEMORY_SIZE = 1000
@@ -23,7 +22,7 @@ PREDICTION_BATCH_SIZE = 1
 DISCOUNT_FACTOR = 0.99
 TRAINING_BATCH_SIZE = MINIBATCH_SIZE // 4
 UPDATE_TARGET_EVERY_N_STEPS = 5
-MODEL_NAME = "Xception"
+MODEL_NAME = "UNetDecision"
 
 class DQNAgent_Xception:
     def __init__(self):
@@ -45,13 +44,8 @@ class DQNAgent_Xception:
     '''
     def create_model(self):
         # Using Xception as our base model to process inputs
-        base_model = Xception(weights= None, include_top=False, input_shape=(settings.image_h, settings.image_w))
+        model = decisionModel.UNetDecision(3,5)
         # Add an avgPool layer
-        x = GlobalAveragePooling2D()(base_model.output)
-        # Add a 5 neuron activation layer to handle the inputs.
-        predictions = Dense(5, activation="linear")(x)
-        model = Model(inputs=base_model.input, outputs=predictions)
-        model.compile(loss="mse", optimizer=Adam(lr=0.005), metrics=["accuracy"])
         return model
     
     '''
@@ -70,15 +64,17 @@ class DQNAgent_Xception:
         # Select the samples for our minibatch from the replay memory
         minibatch = random.sample(self.replay_memory, MINIBATCH_SIZE)
 
-        current_states = np.array([transitions[0] for transitions in minibatch])/255 # Divide by 255 to have color values between 0 and 1
+        current_states = np.array([transitions[0] for transitions in minibatch])/255 # Divide by 255 to have color values between 0 and 1 since our states are images
         
-        #TODO: PREDICT WITH THE ACUTAL MODEL
-        
+
+        with torch.nograd():
+            current_qs_list = self.model(current_states)
 
         new_current_states = np.array([transition[3] for transition in minibatch]) / 255
         
-        #TODO: PREDICT WITH THE TARGET MODEL
-        
+
+        with torch.nograd():
+            future_qs_list = self.target_model(new_current_states)
 
         X = []
         y = []
@@ -101,15 +97,14 @@ class DQNAgent_Xception:
             log_this_step = True
             self.last_log_episode = self.tensorboard.step
 
-        #TODO: ADJUST FIT
-        
+        #TODO: Adjust weights according to loss
 
         if log_this_step:
             self.target_update_counter += 1
 
+        #Update the target network every n steps
         if self.target_update_counter > UPDATE_TARGET_EVERY_N_STEPS:
-            #TODO: Change this...?
-            self.target_model.set_weights(self.model.get_weights())
+            self.target_model.load_state_dict(self.model.state_dict())
             self.target_update_counter = 0
 
     def get_qs(self, state):
