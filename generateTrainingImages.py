@@ -74,7 +74,7 @@ def get_angle(car,wp):
 
 def get_proper_angle(car,wp_idx,rte):
     '''
-    This function uses simple fuction above to get angle but for current
+    This function uses the simple fuction above to get the angle for the current
     waypoint and a few more next waypoints to ensure we have not skipped
     next waypoint so we avoid the car trying to turn back
     '''

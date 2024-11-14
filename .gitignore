@@ -7,3 +7,5 @@
 /checkpoints/*
 test.png
 testimage.png
+/logs
+/RLModels

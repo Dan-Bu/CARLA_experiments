@@ -14,6 +14,7 @@ import math
 # Constants
 SHOW_VIDEO = False
 EPISODE_TIME_LIMIT = 20
+MIN_REWARD = -10
 '''
 Reinforcement learning environment for a vehicle in Carla. Implements Q-Learning 
 '''
@@ -25,6 +26,7 @@ class vehicleEnv:
     actor_list = []
     front_camera_feed = None
     collision_history = []
+
 
     def __init__(self):
         # initialise the world
@@ -40,7 +42,7 @@ class vehicleEnv:
     '''
     def reset(self):
         # Reset the collision history and the actor list for a new run
-        self.collision_hist = []
+        self.collision_history = []
         self.actor_list = []
 
         # Get a new random spawn point, and spawn our vehicle there.
@@ -58,10 +60,11 @@ class vehicleEnv:
         self.camera_init_trans = carla.Transform(carla.Location(z=CAMERA_POS_Z,x=CAMERA_POS_X))
 
         # this creates the camera in the sim
-        self.front_camera = self.world.spawn_actor(self.camera_bp, self.camera_init_trans, attach_to=self.vehicle)
-        self.actor_list.append(self.front_camera)
+        self.front_camera_feed = self.world.spawn_actor(self.camera_bp, self.camera_init_trans, attach_to=self.vehicle)
+        self.actor_list.append(self.front_camera_feed)
+        
         # Set up listening to the camera
-        self.front_camera.listen(lambda data: self.process_img(data))
+        self.front_camera_feed.listen(lambda data: self.process_img(data))
 
         # initialise our brake and throttle as 0 to not get weird inputs at the start.
         self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
@@ -72,48 +75,59 @@ class vehicleEnv:
         collision_sensor = self.world.get_blueprint_library().find('sensor.other.collision')
         self.collision_sensor = self.world.spawn_actor(collision_sensor, self.camera_init_trans, attach_to=self.vehicle)
         self.actor_list.append(self.collision_sensor)
+        self.collision_sensor.listen(lambda event: self.collision_data(event))
 
         # Wait for the camera feed to start, in case it takes longer than the 3 seconds to initialize.
         while self.front_camera_feed is None:
             time.sleep(0.01)
 
         # Log the time when the sensors are initiated as the actual start time to cut away the falling time from the episode
-        self.episode_start = time.time
+        self.episode_start = time.time()
 
         # Make sure brake and throttle are at 0 to begin the episode
         self.vehicle.apply_control(carla.VehicleControl(brake=0.0, throttle=0.0))
 
-        return self.front_camera
+        return self.front_camera_feed
     
     '''
     Step function that takes the action that is taken, and returns the observation, reward, 
     done flag, and extra info if we need it.
     '''
     def step(self, action):
+
+        # Compute the current speed
+        v = self.vehicle.get_velocity()
+        kmh = int(3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2))
+
+        # Roughly regulate speed to constant 50
+        if kmh > 30:
+            throttle_input = 0.0
+        else:
+            throttle_input = 1.0
+
         # Keep actions simple to start off with
-        if action == 0: # Go half left
-            self.vehicle.apply_control(carla.VehicleControl(throttle=1.0, steer=-0.5*self.steer_amount))
-        elif action == 1: # Go full left
-            self.vehicle.apply_control(carla.VehicleControl(throttle=1.0, steer=-1.0*self.steer_amount))
+        if action == 0: # Go full left
+            self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=-1.0*self.steer_amount))
+        elif action == 1: # Go half left
+            self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=-0.5*self.steer_amount))
         elif action == 2: # Go Straight
-            self.vehicle.apply_control(carla.VehicleControl(throttle=1.0, steer=0))
-        
+            self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=0))
         elif action == 3: # Go half right
-            self.vehicle.apply_control(carla.VehicleControl(throttle=1.0, steer=0.5*self.steer_amount))
+            self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=0.5*self.steer_amount))
         elif action == 4: # Go full right
-            self.vehicle.apply_control(carla.VehicleControl(throttle=1.0, steer=1.0*self.steer_amount))
+            self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=1.0*self.steer_amount))
 
         # Compute the current speed
         v = self.vehicle.get_velocity()
         kmh = int(3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2))
 
         # Penalize crashes, as well as being slower than 50kmh. Reward clean driving
-        if len(self.collision_hist) > 0:
+        if len(self.collision_history) > 0:
             done = True
-            reward = -200
-        elif kmh < 50:
-            done = False
-            reward = -1
+            reward = -10
+        #elif kmh < 50:
+        #    done = False
+        #    reward = 1
         else:
             done = False
             reward = 1
@@ -123,7 +137,7 @@ class vehicleEnv:
             done = True
 
         # return our observation (camera), reward, done flag, and any extra info
-        return self.front_camera, reward, done, None
+        return self.front_camera_feed, reward, done, None
 
     '''
     Method to display the camera image
@@ -139,10 +153,10 @@ class vehicleEnv:
         if self.show_cam:
             cv2.imshow("", image_arr)
             cv2.waitKey(1)
-        self.front_camera = image_arr
+        self.front_camera_feed = image_arr
 
     # Method to add an event to the env's history
     def collision_data(self, event):
-        self.collision_hist.append(event)
+        self.collision_history.append(event)
 
     

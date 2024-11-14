@@ -6,7 +6,7 @@ import cv2
 # - "test_single_image" runs a single image test on the segmentation network
 # - "TrainCameraDriving" trains the self-driving operator
 # - "CameraDriving" runs the self-driving operator
-mode = "CameraSegmentationTestrun"
+mode = "TrainCameraDriving"
 images_from_fixed_routes = False # This also means no traffic other than our car.
 
 #Training set parameters
@@ -19,7 +19,7 @@ dataloader_num_workers = 8
 image_h = 400
 image_w = 640
 
-#Simulator settings
+#CALRA Simulator settings
 synchronous_master = False
 asynch = True
 
