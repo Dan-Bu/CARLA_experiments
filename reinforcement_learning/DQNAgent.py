@@ -26,8 +26,9 @@ PREDICTION_BATCH_SIZE = 1
 DISCOUNT_FACTOR = 0.99
 TRAINING_BATCH_SIZE = MINIBATCH_SIZE // 8
 UPDATE_TARGET_EVERY_N_STEPS = 5
-MODEL_NAME = "UNetDecision"
-NUM_EPISODES = 2000
+MODEL_NAME = "ConvDecisionV2"
+MODEL_OUTPUT_SIZE = 5
+NUM_EPISODES = 3000
 LEARNING_RATE = 0.001
 EPSILON = 1 # This is the chance to take a random action (Random exploration) vs doing a prediction with our network.
 MIN_EPSILON = 0.01 # Always have a base chance of 1% to take a random action to allow for exploration always
@@ -65,7 +66,14 @@ class Agent:
     '''
     def create_model(self):
         # Using a CNN as our base model to process inputs
-        model = decisionModel.UNetDecision(3,5).to(device)
+        model = None
+        if MODEL_NAME == "ConvDecision":
+            model = decisionModel.ConvDecision(3,MODEL_OUTPUT_SIZE).to(device)
+        elif MODEL_NAME == "ConvDecisionV2":
+            model = decisionModel.ConvDecisionV2(3,MODEL_OUTPUT_SIZE).to(device)
+        else:
+            print("Model not supported!")
+            quit()
         return model
     
     '''
@@ -74,79 +82,10 @@ class Agent:
     def update_replay_memory(self, transition):
         self.replay_memory.append(transition) # Transition consists of [current_state, action, reward, new_state, done flag]
 
+
     '''
     Training process for our RL agent.
-    '''
-    def train_old(self):
-        if len(self.replay_memory) < MIN_REPLAY_MEMORY_SIZE:
-            return
-
-        # Select the samples for our minibatch from the replay memory
-        minibatch = random.sample(self.replay_memory, MINIBATCH_SIZE)
-
-        # Grab the image from the minibatch items
-        current_states = torch.tensor(np.array([transitions[0] for transitions in minibatch])/255).to(torch.float32) # Divide by 255 to have color values between 0 and 1 since our states are images
-        current_qs_list = []
-        future_qs_list = []
-        for state in current_states:
-            # Let the model choose an action
-            state = state.unsqueeze(0).permute(0, 3, 1, 2)
-            with torch.no_grad():
-                current_qs_list.append(self.model(state))
-
-        # Grab the new states from the minibatch items
-        new_current_states = torch.tensor(np.array([transition[3] for transition in minibatch])/ 255).to(torch.float32) 
-        for state in new_current_states:
-            state = state.unsqueeze(0).permute(0, 3, 1, 2)
-            # Let the target model choose the following action
-            with torch.no_grad():
-                future_qs_list.append(self.target_model(state))
-
-        state_action_values = []
-        expected_future_state_action_values = []
-
-        for index, (current_state, action, reward, new_state, done) in enumerate(minibatch):
-            if not done:
-                action_choices = future_qs_list[index]
-                max_future_q = action_choices.max(dim=1)[0]
-                new_q = reward + DISCOUNT_FACTOR * max_future_q
-            else:
-                # If we have crashed, we have no future rewards.
-                new_q = reward
-
-            #update our qs
-            current_qs = current_qs_list[index][0]
-            current_qs[action] = new_q[0]
-
-            state_action_values.append(torch.tensor(current_state))
-            expected_future_state_action_values.append(current_qs)
-            
-        # Log the reward for this step.
-        log_this_step = False
-        if self.current_step > self.last_logged_episode:
-            log_this_step = True
-            self.tensorboard.add_scalar("Reward", new_q, self.current_step)
-            self.last_log_episode = self.current_step
-
-        # Compute Loss
-        criterion = nn.SmoothL1Loss()
-        loss = criterion(state_action_values, expected_future_state_action_values)
-
-        # Optimize model
-        self.optimizer.zero_grad()
-        # Update weights
-        self.optimizer.step()
-
-        if log_this_step:
-            self.target_update_counter += 1
-
-        #Update the target network every n steps
-        if self.target_update_counter > UPDATE_TARGET_EVERY_N_STEPS:
-            self.target_model.load_state_dict(self.model.state_dict())
-            self.target_update_counter = 0
-
-        self.current_step += 1
-    
+    '''    
     def train(self):
         if len(self.replay_memory) < MIN_REPLAY_MEMORY_SIZE:
             return
@@ -176,11 +115,18 @@ class Agent:
         loss = criterion(state_action_values, expected_state_action_values.unsqueeze(1))
 
         # Optimize model
+        # Set gradients to zero
         self.optimizer.zero_grad()
-        # Update weights
+        
+        # Compute Loss through backprop
+        loss.backward()
+        
+        # Update weights with new gradient
         self.optimizer.step()
 
         if self.current_step > self.last_logged_episode:
+            self.tensorboard.add_scalar("Reward", max(next_state_values), self.current_step)
+            #self.tensorboard.add_scalar("Loss", loss[0], self.current_step)
             self.target_update_counter += 1
 
         #Update the target network every n steps

@@ -26,7 +26,9 @@ class vehicleEnv:
     actor_list = []
     front_camera_feed = None
     collision_history = []
-
+    lane_invasion_history = []
+    lane_invasion_count = 0
+    lane_invasion_last_infraction_time = time.time()
 
     def __init__(self):
         # initialise the world
@@ -41,8 +43,10 @@ class vehicleEnv:
     Resets the vehicle state
     '''
     def reset(self):
-        # Reset the collision history and the actor list for a new run
+        # Reset the collision history, lane invasion history and the actor list for a new run
         self.collision_history = []
+        self.lane_invasion_history = []
+        self.lane_invasion_count = 0
         self.actor_list = []
 
         # Get a new random spawn point, and spawn our vehicle there.
@@ -50,8 +54,8 @@ class vehicleEnv:
         self.vehicle = self.world.spawn_actor(self.vehicle_blueprint, self.transform)
         self.actor_list.append(self.vehicle)
 
+        # ------------RGB CAM----------------
         # Configure the RGB camera
-        self.rgb_cam = self.world.get_blueprint_library().find('sensor.camera.rgb')
         CAMERA_POS_Z = 1.5
         CAMERA_POS_X = 0.5
         self.camera_bp = self.world.get_blueprint_library().find('sensor.camera.rgb')
@@ -64,7 +68,23 @@ class vehicleEnv:
         self.actor_list.append(self.front_camera_feed)
         
         # Set up listening to the camera
-        self.front_camera_feed.listen(lambda data: self.process_img(data))
+        self.front_camera_feed.listen(lambda data: self.process_rgb_img(data))
+
+        # ------------SEMSEG CAM----------------
+        # Configure the SemSeg camera
+        CAMERA_POS_Z = 1.5
+        CAMERA_POS_X = 0.5
+        self.semseg_camera_bp = self.world.get_blueprint_library().find('sensor.camera.semantic_segmentation')
+        self.semseg_camera_bp.set_attribute('image_size_x', f'{self.image_width}') # this ratio works in CARLA 9.14 on Windows
+        self.semseg_camera_bp.set_attribute('image_size_y', f'{self.image_height}')
+        self.semseg_camera_init_trans = carla.Transform(carla.Location(z=CAMERA_POS_Z,x=CAMERA_POS_X))
+
+        # this creates the Semsegcamera in the sim
+        self.semseg_front_camera_feed = self.world.spawn_actor(self.semseg_camera_bp, self.semseg_camera_init_trans, attach_to=self.vehicle)
+        self.actor_list.append(self.semseg_front_camera_feed)
+        
+        # Set up listening to the semseg camera
+        self.semseg_front_camera_feed.listen(lambda data: self.process_semseg_img(data))
 
         # initialise our brake and throttle as 0 to not get weird inputs at the start.
         self.vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=0.0))
@@ -77,6 +97,12 @@ class vehicleEnv:
         self.actor_list.append(self.collision_sensor)
         self.collision_sensor.listen(lambda event: self.collision_data(event))
 
+        # Generate our lane invasion sensor
+        lane_invasion_sensor = self.world.get_blueprint_library().find('sensor.other.lane_invasion')
+        self.collision_sensor = self.world.spawn_actor(lane_invasion_sensor, self.camera_init_trans, attach_to=self.vehicle)
+        self.actor_list.append(self.collision_sensor)
+        self.collision_sensor.listen(lambda event: self.lane_invasion_data(event))
+
         # Wait for the camera feed to start, in case it takes longer than the 3 seconds to initialize.
         while self.front_camera_feed is None:
             time.sleep(0.01)
@@ -87,7 +113,7 @@ class vehicleEnv:
         # Make sure brake and throttle are at 0 to begin the episode
         self.vehicle.apply_control(carla.VehicleControl(brake=0.0, throttle=0.0))
 
-        return self.front_camera_feed
+        return self.semseg_front_camera_feed
     
     '''
     Step function that takes the action that is taken, and returns the observation, reward, 
@@ -117,32 +143,31 @@ class vehicleEnv:
         elif action == 4: # Go full right
             self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=1.0*self.steer_amount))
 
-        # Compute the current speed
-        v = self.vehicle.get_velocity()
-        kmh = int(3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2))
-
         # Penalize crashes, as well as being slower than 50kmh. Reward clean driving
         if len(self.collision_history) > 0:
             done = True
-            reward = -10
-        #elif kmh < 50:
-        #    done = False
-        #    reward = 1
+            reward = -20
         else:
             done = False
             reward = 1
 
+        # Punish leaving the lane (and therefore the road). Only one infraction per second to avoid getting multiple while crossing a line once.
+        current_time = time.time()
+        if len(self.lane_invasion_history) > self.lane_invasion_count and current_time - self.lane_invasion_last_infraction_time > 1:
+            self.lane_invasion_count = len(self.lane_invasion_history)
+            reward -= 5
+            self.lane_invasion_last_infraction_time = current_time
         #set the done flag if the time for this episode is over
         if self.episode_start + EPISODE_TIME_LIMIT < time.time():
             done = True
 
         # return our observation (camera), reward, done flag, and any extra info
-        return self.front_camera_feed, reward, done, None
+        return self.semseg_front_camera_feed, reward, done, None
 
     '''
     Method to display the camera image
     '''
-    def process_img(self, image):
+    def process_rgb_img(self, image):
         # Convert image to array
         image_arr = np.array(image.raw_data)  
         # Bring it in RGBA shape
@@ -151,12 +176,29 @@ class vehicleEnv:
         image_arr = image_arr[:, :, :3]
 
         if self.show_cam:
-            cv2.imshow("", image_arr)
+            cv2.imshow("rgb", image_arr)
             cv2.waitKey(1)
         self.front_camera_feed = image_arr
+
+    def process_semseg_img(self, image):
+        image.convert(carla.ColorConverter.CityScapesPalette)
+        # Convert image to array
+        image_arr = np.array(image.raw_data)  
+        # Bring it in RGBA shape
+        image_arr = image_arr.reshape((self.image_height, self.image_width, 4))
+        # Discard alpha channel
+        image_arr = image_arr[:, :, :3]
+        
+        if self.show_cam:
+            cv2.imshow("semseg", image_arr)
+            cv2.waitKey(1)
+        self.semseg_front_camera_feed = image_arr
 
     # Method to add an event to the env's history
     def collision_data(self, event):
         self.collision_history.append(event)
+
+    def lane_invasion_data(self, event):
+        self.lane_invasion_history.append(event)
 
     
