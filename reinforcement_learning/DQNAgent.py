@@ -1,20 +1,13 @@
-import glob
-import os
-import sys
-import carla
+
 from carla import command
 import random
 import time
 import numpy as np
-import settings
-import cv2
-import math
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from collections import deque
-import tensorboard
 from torch.utils.tensorboard import SummaryWriter
 
 import reinforcement_learning.decisionModel as decisionModel
@@ -27,7 +20,7 @@ DISCOUNT_FACTOR = 0.99
 TRAINING_BATCH_SIZE = MINIBATCH_SIZE // 8
 UPDATE_TARGET_EVERY_N_STEPS = 5
 MODEL_NAME = "ConvDecisionV2"
-MODEL_OUTPUT_SIZE = 5
+MODEL_OUTPUT_SIZE = 9
 NUM_EPISODES = 3000
 LEARNING_RATE = 0.001
 EPSILON = 1 # This is the chance to take a random action (Random exploration) vs doing a prediction with our network.

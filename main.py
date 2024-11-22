@@ -130,10 +130,9 @@ def train_camera_driving():
                 max_reward = max(ep_rewards[-DQNAgent.AGGREGATE_STATS_EVERY:])
                 agent.tensorboard.add_scalars("Step_Logging", {"reward_avg":average_reward, "reward_min":min_reward, "reward_max":max_reward, "epsilon":agent.epsilon}, episode)
 
-                # Save model, but only when min reward is greater or equal a set value
-                # Actually, saving them every time will take up far too much space on my hardware...
-                #if min_reward >= RLDrivingEnvironment.MIN_REWARD:
-                #    torch.save(agent.model.state_dict(), f'./RLmodels/{DQNAgent.MODEL_NAME}__Trained__{DQNAgent.NUM_EPISODES}eps')
+                # Save model periodically
+                if episode % 1000:
+                    torch.save(agent.model.state_dict(), f'./RLmodels/{DQNAgent.MODEL_NAME}__Trained__{DQNAgent.NUM_EPISODES}__output{DQNAgent.MODEL_OUTPUT_SIZE}eps__{int(time.time())}')
 
         # Decay Epsilon to slowly use the network more while never fully losing random exploration
         if agent.epsilon > DQNAgent.MIN_EPSILON:
@@ -145,7 +144,7 @@ def train_camera_driving():
     #Terminate training thread and save model.
     agent.terminate = True
     trainer_thread.join()
-    torch.save(agent.model.state_dict(), f'RLmodels/{DQNAgent.MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__{int(time.time())}')
+    torch.save(agent.model.state_dict(), f'RLmodels/{DQNAgent.MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__output{DQNAgent.MODEL_OUTPUT_SIZE}__{int(time.time())}')
 
 if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium') # To utilize the 4070 TI Supers tensor cores

@@ -1,6 +1,3 @@
-import glob
-import os
-import sys
 import carla
 from carla import command
 import random
@@ -134,13 +131,21 @@ class vehicleEnv:
         # Keep actions simple to start off with
         if action == 0: # Go full left
             self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=-1.0*self.steer_amount))
-        elif action == 1: # Go half left
+        elif action == 1: # Go three quarter left
+            self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=-0.75*self.steer_amount))
+        elif action == 2: # Go half left
             self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=-0.5*self.steer_amount))
-        elif action == 2: # Go Straight
+        elif action == 3: # Go one quarter left
+            self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=-0.25*self.steer_amount))
+        elif action == 4: # Go Straight
             self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=0))
-        elif action == 3: # Go half right
+        elif action == 5: # Go one quarter right
+            self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=0.25*self.steer_amount))
+        elif action == 6: # Go half right
             self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=0.5*self.steer_amount))
-        elif action == 4: # Go full right
+        elif action == 7: # Go three quarter right
+            self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=0.75*self.steer_amount))
+        elif action == 8: # Go full right
             self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=1.0*self.steer_amount))
 
         # Penalize crashes, as well as being slower than 50kmh. Reward clean driving
