@@ -6,6 +6,7 @@ import numpy as np
 import settings
 import cv2
 import math
+from agents.navigation.global_route_planner import GlobalRoutePlanner
 
 
 # Constants
@@ -26,6 +27,7 @@ class vehicleEnv:
     lane_invasion_history = []
     lane_invasion_count = 0
     lane_invasion_last_infraction_time = time.time()
+    current_route = None
 
     def __init__(self):
         # initialise the world
@@ -47,9 +49,14 @@ class vehicleEnv:
         self.actor_list = []
 
         # Get a new random spawn point, and spawn our vehicle there.
-        self.transform = random.choice(self.world.get_map().get_spawn_points())
+        spawn_points = self.world.get_map().get_spawn_points()
+
+        self.transform = random.choice(spawn_points)
         self.vehicle = self.world.spawn_actor(self.vehicle_blueprint, self.transform)
         self.actor_list.append(self.vehicle)
+
+        # Generate a route for our vehicle to follow
+        self.current_route = self.select_random_route(self.transform, spawn_points)
 
         # ------------RGB CAM----------------
         # Configure the RGB camera
@@ -162,6 +169,7 @@ class vehicleEnv:
             self.lane_invasion_count = len(self.lane_invasion_history)
             reward -= 5
             self.lane_invasion_last_infraction_time = current_time
+
         #set the done flag if the time for this episode is over
         if self.episode_start + EPISODE_TIME_LIMIT < time.time():
             done = True
@@ -206,4 +214,64 @@ class vehicleEnv:
     def lane_invasion_data(self, event):
         self.lane_invasion_history.append(event)
 
-    
+    '''
+    retruns a random route for the car towards a location
+    out of the list of possible locations in the spawn list
+    where distance is longer than 100 waypoints
+    '''  
+    def select_random_route(self, position, destinations):
+          
+        current_position = position.location #we start at where the car is
+        sampling_resolution = 1
+        grp = GlobalRoutePlanner(self.world.get_map(), sampling_resolution)
+        # We want a route with min_distance checkpoints at least
+        min_distance = 100
+        result_route = None
+
+        # We pick random spawn locations that we could travel to until we find one that connects to our current position
+        # with enough checkpoints to make the route worthwhile.
+        while result_route == None:
+            destination = random.choice(destinations)
+            potential_route = grp.trace_route(current_position, destination.location)
+            if len(potential_route) > min_distance:
+                result_route = potential_route
+
+        return potential_route
+
+    '''
+    this function returns degrees between the car's orientation 
+    and the direction to a selected waypoint
+    '''
+    def get_angle(self, car, wp):
+        
+        vehicle_pos = car.get_transform()
+        car_x = vehicle_pos.location.x
+        car_y = vehicle_pos.location.y
+        wp_x = wp.transform.location.x
+        wp_y = wp.transform.location.y
+
+        # vector to waypoint
+        x = (wp_x - car_x)/((wp_y - car_y)**2 + (wp_x - car_x)**2)**0.5
+        y = (wp_y - car_y)/((wp_y - car_y)**2 + (wp_x - car_x)**2)**0.5
+
+        #car vector
+        car_vector = vehicle_pos.get_forward_vector()
+        degrees = math.degrees(np.arctan2(y, x) - np.arctan2(car_vector.y, car_vector.x))
+        # extra checks on predicted angle when values close to 360 degrees are returned
+        if degrees<-180:
+            degrees = degrees + 360
+        elif degrees > 180:
+            degrees = degrees - 360
+        return degrees
+
+    '''
+    draws the next route the car is on in sim window - Note it does not
+    get into the camera of the car
+    '''
+    def draw_route(self, route, seconds=0.2):
+        
+        draw_colour = carla.Color(r=0, g=0, b=255)
+        for wp in route:
+            self.world.debug.draw_string(wp[0].transform.location, '^', draw_shadow=False,color=draw_colour, life_time=seconds, persistent_lines=True)
+            # We use draw_string because it will not draw on the sensor cameras, compared to draw_point        
+        return None

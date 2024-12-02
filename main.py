@@ -48,6 +48,10 @@ def train_camera_driving():
     agent = DQNAgent.Agent()
     env = RLDrivingEnvironment.vehicleEnv()
 
+    # Set up spectator camera
+    spectator = env.world.get_spectator()
+    transform = carla.Transform(carla.Location(x=100, y=210, z=180), carla.Rotation(pitch = -90.0, yaw = 90))
+    spectator.set_transform(transform)
     # Fix seeding for experiment reproducability
     random.seed(1)
     np.random.seed(1)
@@ -86,12 +90,14 @@ def train_camera_driving():
         while True:
 
             # This part stays mostly the same, the change is to query a model for Q values
-            if np.random.random() > DQNAgent.EPSILON:
+            if np.random.random() > agent.epsilon:
                 # Get action from Q table
-                action = np.argmax(agent.get_qs(current_state))
+                result = (agent.get_qs(current_state))
+                result_max = result.max(1)
+                action = int(result_max[1][0])
             else:
                 # Get random action
-                action = np.random.randint(0, 4)
+                action = np.random.randint(0, DQNAgent.MODEL_OUTPUT_SIZE - 1)
                 # This takes no time, so we add a delay matching 60 FPS (prediction above takes longer)
                 time.sleep(1/FPS)
 
@@ -114,9 +120,15 @@ def train_camera_driving():
             if cv2.waitKey(10)==ord('q'):
                 return
 
+            # Draw current route
+            env.draw_route(env.current_route)
+
             if done:
                 break
-        
+
+        episode_end = time.time()
+        agent.tensorboard.add_scalar("Episode_Logging/episode_time", episode_end - episode_start, episode)
+
         # End of episode - destroy agents
         for actor in env.actor_list:
             actor.destroy()
@@ -131,8 +143,8 @@ def train_camera_driving():
                 agent.tensorboard.add_scalars("Step_Logging", {"reward_avg":average_reward, "reward_min":min_reward, "reward_max":max_reward, "epsilon":agent.epsilon}, episode)
 
                 # Save model periodically
-                if episode % 1000:
-                    torch.save(agent.model.state_dict(), f'./RLmodels/{DQNAgent.MODEL_NAME}__Trained__{DQNAgent.NUM_EPISODES}__output{DQNAgent.MODEL_OUTPUT_SIZE}eps__{int(time.time())}')
+                if episode % 1000 == 0:
+                    torch.save(agent.model.state_dict(), f'./RLmodels/{DQNAgent.MODEL_NAME}__output__{DQNAgent.MODEL_OUTPUT_SIZE}__eps__{episode}__{datetime.datetime.now().hour}:{datetime.datetime.now().minute}')
 
         # Decay Epsilon to slowly use the network more while never fully losing random exploration
         if agent.epsilon > DQNAgent.MIN_EPSILON:
@@ -144,7 +156,7 @@ def train_camera_driving():
     #Terminate training thread and save model.
     agent.terminate = True
     trainer_thread.join()
-    torch.save(agent.model.state_dict(), f'RLmodels/{DQNAgent.MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__output{DQNAgent.MODEL_OUTPUT_SIZE}__{int(time.time())}')
+    torch.save(agent.model.state_dict(), f'RLmodels/{DQNAgent.MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}avg_{min_reward:_>7.2f}min__output{DQNAgent.MODEL_OUTPUT_SIZE}__{datetime.datetime.now()}__TotalEps__{episode}')
 
 if __name__ == '__main__':
     torch.set_float32_matmul_precision('medium') # To utilize the 4070 TI Supers tensor cores

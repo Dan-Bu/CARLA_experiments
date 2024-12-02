@@ -138,10 +138,10 @@ def select_random_route(world, position,locs):
     out of the list of possible locations locs
     where distance is longer than 100 waypoints
     '''    
-    point_a = position.location #we start at where the car is or last waypoint
+    point_a = position.location #we start at where the car is
     sampling_resolution = 1
     grp = GlobalRoutePlanner(world.get_map(), sampling_resolution)
-    # now let' pick the longest possible route
+    # now let's pick the longest possible route
     min_distance = 100
     result_route = None
     route_list = []
@@ -277,7 +277,6 @@ def generate_training_data():
         world.set_weather(weather)
 
         # Determine spawn point for the ego vehicle
-#        spawn_points = world.get_map().get_spawn_points()
         start_point = random.choice(spawn_points)
 
         #look for a blueprint of dodge charger car

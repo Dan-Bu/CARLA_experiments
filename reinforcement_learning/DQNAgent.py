@@ -9,11 +9,12 @@ import torch.optim as optim
 import torch.nn.functional as F
 from collections import deque
 from torch.utils.tensorboard import SummaryWriter
+from agents.navigation.global_route_planner import GlobalRoutePlanner
 
 import reinforcement_learning.decisionModel as decisionModel
 
 REPLAY_MEMORY_SIZE = 5000
-MIN_REPLAY_MEMORY_SIZE = 100
+MIN_REPLAY_MEMORY_SIZE = 500
 MINIBATCH_SIZE = 16
 PREDICTION_BATCH_SIZE = 1
 DISCOUNT_FACTOR = 0.99
@@ -21,7 +22,7 @@ TRAINING_BATCH_SIZE = MINIBATCH_SIZE // 8
 UPDATE_TARGET_EVERY_N_STEPS = 5
 MODEL_NAME = "ConvDecisionV2"
 MODEL_OUTPUT_SIZE = 9
-NUM_EPISODES = 3000
+NUM_EPISODES = 2001
 LEARNING_RATE = 0.001
 EPSILON = 1 # This is the chance to take a random action (Random exploration) vs doing a prediction with our network.
 MIN_EPSILON = 0.01 # Always have a base chance of 1% to take a random action to allow for exploration always
@@ -135,7 +136,8 @@ class Agent:
 
 
     def get_qs(self, state):
-        return self.model(np.array(state).reshape(-1, *state.shape)/255)[0]
+        tensor = torch.tensor(np.array(state).reshape(-1, *state.shape)/255)[0].unsqueeze(0).permute(0,3,1,2).to(torch.float32).to(device)
+        return self.model(tensor)
 
     def train_in_loop(self):
 
@@ -147,3 +149,7 @@ class Agent:
             self.train()
             time.sleep(0.01)
             i = i+1
+
+
+
+
