@@ -28,6 +28,7 @@ class vehicleEnv:
     lane_invasion_count = 0
     lane_invasion_last_infraction_time = time.time()
     current_route = None
+    current_wp = 0
 
     def __init__(self):
         # initialise the world
@@ -56,7 +57,8 @@ class vehicleEnv:
         self.actor_list.append(self.vehicle)
 
         # Generate a route for our vehicle to follow
-        self.current_route = self.select_random_route(self.transform, spawn_points)
+        self.current_route = self.select_random_route(self.transform, spawn_points, 3)
+        self.current_wp = 0
 
         # ------------RGB CAM----------------
         # Configure the RGB camera
@@ -155,7 +157,7 @@ class vehicleEnv:
         elif action == 8: # Go full right
             self.vehicle.apply_control(carla.VehicleControl(throttle=throttle_input, steer=1.0*self.steer_amount))
 
-        # Penalize crashes, as well as being slower than 50kmh. Reward clean driving
+        # Penalize crashes. Reward clean driving
         if len(self.collision_history) > 0:
             done = True
             reward = -20
@@ -163,7 +165,7 @@ class vehicleEnv:
             done = False
             reward = 1
 
-        # Punish leaving the lane (and therefore the road). Only one infraction per second to avoid getting multiple while crossing a line once.
+        # Penalize leaving the lane (and therefore the road). Only one infraction per second to avoid getting multiple while crossing a line once.
         current_time = time.time()
         if len(self.lane_invasion_history) > self.lane_invasion_count and current_time - self.lane_invasion_last_infraction_time > 1:
             self.lane_invasion_count = len(self.lane_invasion_history)
@@ -219,10 +221,9 @@ class vehicleEnv:
     out of the list of possible locations in the spawn list
     where distance is longer than 100 waypoints
     '''  
-    def select_random_route(self, position, destinations):
+    def select_random_route(self, position, destinations, sampling_resolution):
           
         current_position = position.location #we start at where the car is
-        sampling_resolution = 1
         grp = GlobalRoutePlanner(self.world.get_map(), sampling_resolution)
         # We want a route with min_distance checkpoints at least
         min_distance = 100
